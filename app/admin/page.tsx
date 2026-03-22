@@ -2,9 +2,11 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { forceLogout } from '../actions'; 
-import { revalidatePath } from 'next/cache'; // 💡 นำเข้า revalidatePath เพื่อให้รีเฟรชข้อมูลหลังลบเสร็จ
+import { revalidatePath } from 'next/cache';
+import DeleteButton from './DeleteButton'; // ✅ นำเข้าปุ่มที่คุณสร้างไว้
 
-// กำหนด Type สำหรับข้อมูล Booking
+const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api/v1";
+
 interface Booking {
   _id: string;
   pickUpDate: string;
@@ -19,55 +21,67 @@ interface Booking {
 }
 
 export default async function AdminDashboard() {
-  // 1. ดึง Token จาก Cookie
   const cookieStore = await cookies();
   const token = cookieStore.get('token')?.value;
 
-  // ถ้าไม่มี Token ให้เด้งกลับไปหน้า Login
   if (!token) {
     redirect('/login');
   }
 
-  // =========================================================
-  // 💡 เพิ่มฟังก์ชัน Server Action สำหรับ "ลบการจอง"
-  // =========================================================
+  // 🛡️ เช็คสิทธิ์ Admin
+  const meRes = await fetch(`${apiUrl}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store'
+  });
+  const meData = await meRes.json();
+  if (!meRes.ok || meData.data.role !== 'admin') {
+    redirect('/'); 
+  }
+
+  // 💡 Server Action สำหรับลบ (ส่งไปให้ DeleteButton เรียกใช้)
   async function deleteBooking(formData: FormData) {
-    "use server"; // ประกาศว่าเป็นฟังก์ชันทำงานฝั่งเซิร์ฟเวอร์
-    
+    "use server";
     const bookingId = formData.get("bookingId")?.toString();
     if (!bookingId) return;
 
-    // ต้องดึง Token มาแนบอีกรอบสำหรับการยิง Delete
     const cookieStore = await cookies();
     const currentToken = cookieStore.get('token')?.value;
 
     try {
-      await fetch(`${process.env.NEXT_PUBLIC_API_URL}/bookings/${bookingId}`, {
+      const res = await fetch(`${apiUrl}/bookings/${bookingId}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${currentToken}`,
         },
       });
       
-      // ลบเสร็จ สั่งให้ Next.js ดึงข้อมูลใหม่และอัปเดตหน้าจอตารางทันที
-      revalidatePath('/admin');
+      if (res.ok) {
+        revalidatePath('/admin');
+      }
     } catch (err) {
       console.error("Delete booking error:", err);
     }
   }
 
-  // 2. ยิง API ไปดึงข้อมูล Bookings ทั้งหมด
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/bookings`, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    cache: 'no-store', 
-  });
+  // 2. ดึงข้อมูล Bookings
+  let bookings: Booking[] = [];
+  try {
+    const res = await fetch(`${apiUrl}/bookings`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      cache: 'no-store', 
+    });
 
-  const responseData = await res.json();
-  const bookings: Booking[] = responseData.data || [];
+    if (res.ok) {
+      const responseData = await res.json();
+      bookings = responseData.data || [];
+    }
+  } catch (err) {
+    console.error("Fetch bookings error:", err);
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col md:flex-row font-sans relative">
@@ -77,20 +91,20 @@ export default async function AdminDashboard() {
           <h2 className="text-2xl font-bold text-white">Admin Panel</h2>
         </div>
         <nav className="flex-1 px-4 space-y-2">
-          {/* หน้า Bookings เป็นหน้าปัจจุบัน เลยให้เป็นสีฟ้า (Active) */}
           <Link href="/admin" className="block px-4 py-2 bg-blue-600 rounded-md text-white font-medium shadow-md">
             📋 จัดการการจอง (Bookings)
           </Link>
-          {/* ลิงก์ไปหน้า Providers เป็นแบบ hover ธรรมดา */}
           <Link href="/admin/providers" className="block px-4 py-2 hover:bg-slate-800 rounded-md text-gray-300 transition">
             🏢 จัดการผู้ให้บริการ
           </Link>
-          <Link 
-            href="/" 
-            className="flex items-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 text-sm font-bold rounded-xl hover:bg-blue-100 transition shadow-sm"
+          <div className="pt-4 mt-4 border-t border-slate-800">
+            <Link 
+              href="/" 
+              className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-50 text-blue-600 text-sm font-bold rounded-xl hover:bg-blue-100 transition shadow-sm"
             >
-            🏠 Back to Home
-          </Link>
+              🏠 Back to Home
+            </Link>
+          </div>
         </nav>
         <div className="p-4">
           <form action={forceLogout}>
@@ -103,14 +117,11 @@ export default async function AdminDashboard() {
 
       {/* ================= MAIN CONTENT ================= */}
       <main className="flex-1 p-8">
-        <header className="mb-8 flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-800">ระบบจัดการการจองรถทั้งหมด</h1>
-            <p className="text-gray-500 mt-1">แอดมินสามารถดู แก้ไข และยกเลิกการจองของทุกคนได้ที่นี่</p>
-          </div>
+        <header className="mb-8">
+          <h1 className="text-3xl font-bold text-gray-800">ระบบจัดการการจองรถทั้งหมด</h1>
+          <p className="text-gray-500 mt-1">แอดมินสามารถดู แก้ไข และยกเลิกการจองได้</p>
         </header>
 
-        {/* ================= TABLE ================= */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -146,7 +157,6 @@ export default async function AdminDashboard() {
                       </td>
                       <td className="p-4 text-center whitespace-nowrap">
                         <div className="flex items-center justify-center space-x-2">
-                          {/* ปุ่ม Edit: ลิงก์ไปหน้าแก้ที่คุณมีอยู่แล้ว */}
                           <Link 
                             href={`/reservations/edit/${booking._id}`}
                             className="px-3 py-1 bg-yellow-100 text-yellow-700 rounded-md text-sm hover:bg-yellow-200 transition"
@@ -154,16 +164,11 @@ export default async function AdminDashboard() {
                             แก้ไข
                           </Link>
                           
-                          {/* 💡 เปลี่ยนปุ่ม Delete ให้ใช้ฟอร์มยิง Server Action แทน */}
-                          <form action={deleteBooking} className="inline-block m-0 p-0">
-                            <input type="hidden" name="bookingId" value={booking._id} />
-                            <button 
-                              type="submit" 
-                              className="px-3 py-1 bg-red-100 text-red-700 rounded-md text-sm hover:bg-red-200 transition cursor-pointer"
-                            >
-                              ลบ
-                            </button>
-                          </form>
+                          {/* ✅ ใช้ DeleteButton ที่เป็น Client Component แทนฟอร์มเดิม */}
+                          <DeleteButton 
+                            bookingId={booking._id} 
+                            deleteAction={deleteBooking} 
+                          />
                         </div>
                       </td>
                     </tr>
@@ -171,7 +176,7 @@ export default async function AdminDashboard() {
                 ) : (
                   <tr>
                     <td colSpan={5} className="p-8 text-center text-gray-500">
-                      ยังไม่มีข้อมูลการจองในระบบ
+                      ไม่พบข้อมูลการจองในระบบ
                     </td>
                   </tr>
                 )}
